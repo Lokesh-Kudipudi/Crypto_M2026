@@ -1,0 +1,216 @@
+import { useState } from "react";
+import { useEth } from "./contexts/EthContext";
+import "./styles.css";
+
+const IPFS_API = "http://127.0.0.1:5001";
+const IPFS_GATEWAY = "http://127.0.0.1:8081"; // Addresses.Gateway in your IPFS config
+
+// Uploads a File to the local IPFS node and returns the CID string.
+async function uploadToIpfs(file) {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(`${IPFS_API}/api/v0/add?pin=true&cid-version=0`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) throw new Error(`IPFS add failed: HTTP ${res.status}`);
+  const json = await res.json(); // { Name, Hash, Size }
+  return json.Hash;
+}
+
+const FIELDS = [
+  { key: "certificateId", label: "Certificate ID" },
+  { key: "uid", label: "UID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "courseName", label: "Course Name" },
+  { key: "organizationName", label: "Organization Name" },
+  { key: "cgpa", label: "CGPA" },
+  { key: "completionYear", label: "Completion Year" },
+];
+
+function MainComp() {
+  const { state: { contract, accounts } } = useEth();
+
+  const [certificateData, setCertificateData] = useState({
+    certificateId: "",
+    uid: "",
+    candidateName: "",
+    courseName: "",
+    organizationName: "",
+    ipfsHash: "",
+    cgpa: "",
+    completionYear: "",
+  });
+
+  const [certificateDetails, setCertificateDetails] = useState(null);
+  const [certificateId, setCertificateId] = useState("");
+  const [pdfFile, setPdfFile] = useState(null);
+  const [status, setStatus] = useState("");
+
+  const handleGenerateCertificate = async (e) => {
+    e.preventDefault(); // button is inside a <form>; without this the page reloads and aborts the upload/tx
+    const {
+      certificateId,
+      uid,
+      candidateName,
+      courseName,
+      organizationName,
+      cgpa,
+      completionYear,
+    } = certificateData;
+
+    try {
+      if (!pdfFile) {
+        alert("Select the certificate PDF first.");
+        return;
+      }
+      setStatus("Uploading PDF to IPFS...");
+      const ipfsHash = await uploadToIpfs(pdfFile);
+      console.log("IPFS CID:", ipfsHash);
+      setStatus(`Uploaded. CID = ${ipfsHash}. Confirm the MetaMask transaction...`);
+
+      await contract.methods
+        .generateCertificate(
+          certificateId,
+          uid,
+          candidateName,
+          courseName,
+          organizationName,
+          ipfsHash,
+          cgpa,
+          parseInt(completionYear)
+        )
+        .send({ from: accounts[0] });
+      setStatus(`Stored on-chain with CID ${ipfsHash}`);
+      alert("Certificate generated successfully!\nIPFS CID: " + ipfsHash);
+    } catch (error) {
+      console.error("Error generating certificate:", error);
+      setStatus("Error: " + (error.message || error));
+    }
+  };
+
+  const handleGetCertificate = async () => {
+    try {
+      const details = await contract.methods
+        .getCertificate(certificateId)
+        .call();
+      setCertificateDetails({
+        uid: details[0],
+        candidateName: details[1],
+        courseName: details[2],
+        organizationName: details[3],
+        ipfsHash: details[4],
+        cgpa: details[5],
+        completionYear: details[6],
+      });
+    } catch (error) {
+      console.error("Error fetching certificate details:", error);
+    }
+  };
+
+  const handleVerifyCertificate = async () => {
+    try {
+      const result = await contract.methods
+        .verifyCertificate(certificateId)
+        .call();
+      if (result[0]) {
+        alert("Certificate is valid!");
+        setCertificateDetails({
+          candidateName: result[1],
+          courseName: result[2],
+          organizationName: result[3],
+          cgpa: result[4],
+          completionYear: result[5],
+        });
+      } else {
+        alert("Certificate is invalid or does not exist.");
+        setCertificateDetails(null);
+      }
+    } catch (error) {
+      console.error("Error verifying certificate:", error);
+    }
+  };
+
+  return (
+    <div id="App">
+      <h1 className="title">Certification DApp</h1>
+      <div className="horizontal-container">
+        {/* Left Section */}
+        <div className="left-section">
+          <div className="card">
+            <h2>Generate Certificate</h2>
+            <form>
+              {FIELDS.map(({ key, label }) => (
+                <input
+                  key={key}
+                  className="input"
+                  placeholder={label}
+                  onChange={(e) =>
+                    setCertificateData((prev) => ({ ...prev, [key]: e.target.value }))
+                  }
+                />
+              ))}
+              <input
+                className="input"
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => setPdfFile(e.target.files[0] || null)}
+              />
+              <button type="button" className="button" onClick={handleGenerateCertificate}>
+                Generate Certificate
+              </button>
+              {status && <p>{status}</p>}
+            </form>
+          </div>
+        </div>
+
+        {/* Right Section */}
+        <div className="right-section">
+          <div className="card">
+            <h2>Fetch Certificate</h2>
+            <input
+              className="input"
+              placeholder="Certificate ID"
+              onChange={(e) => setCertificateId(e.target.value)}
+            />
+            <button className="button" onClick={handleGetCertificate}>
+              Fetch Certificate Details
+            </button>
+
+            {certificateDetails && (
+              <div className="details">
+                <h3>Certificate Details</h3>
+                {Object.entries(certificateDetails).map(([key, value], index) => (
+                  <p key={index}>
+                    <strong>{key.replace(/([A-Z])/g, " $1")}: </strong>
+                    {value}
+                    {key === "ipfsHash" && value && (
+                      <>
+                        {" "}
+                        (<a href={`${IPFS_GATEWAY}/ipfs/${value}`} target="_blank" rel="noreferrer">open PDF</a>)
+                      </>
+                    )}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <h2>Verify Certificate</h2>
+            <input
+              className="input"
+              placeholder="Certificate ID"
+              onChange={(e) => setCertificateId(e.target.value)}
+            />
+            <button className="button" onClick={handleVerifyCertificate}>
+              Verify Certificate
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default MainComp;
