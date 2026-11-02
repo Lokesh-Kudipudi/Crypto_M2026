@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Digital Signatures Visual</title>
+<link rel="stylesheet" href="visual.css">
+<style>
+  #curve { width: 100%; max-width: 380px; display: block; border: 1px solid var(--rule); border-radius: 6px; background: #fff; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .chain { display: grid; gap: 8px; }
+  .chain .box { position: relative; }
+  .flow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .msg { font: 13px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; }
+  .attack-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  @media (max-width: 600px) { .flow { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>Digital Signatures</h1>
+    <p>ECDSA with EIP-712 for batches, and <code>personal_sign</code> for wallet linking. This page runs real secp256k1 maths with throwaway keys. Never enter a real private key anywhere.</p>
+  </header>
+  <nav class="jump">
+    <a href="#keys">1. Keys</a><a href="#sign">2. Sign and recover</a><a href="#eip712">3. EIP-712 batch</a><a href="#malleable">4. Malleability</a><a href="#link">5. Wallet linking</a><a href="#reuse">6. Why k must be secret</a>
+  </nav>
+
+  <section class="card" id="keys">
+    <h2>1. Keys: easy forwards, infeasible backwards</h2>
+    <p class="lead">A private key is a number k. The public key is the curve point k × G. Computing it is fast, but recovering k from the point is the elliptic curve discrete logarithm problem.</p>
+    <div class="grid2">
+      <div>
+        <svg id="curve" viewBox="0 0 360 360" role="img" aria-label="Points of a small example elliptic curve, with the point k times G highlighted"></svg>
+        <p class="small muted">A toy curve: y² = x³ + 7 over a field of 97 elements. The real curve has the same equation, with about 2<sup>256</sup> points.</p>
+      </div>
+      <div>
+        <label for="k">Private key k: <span id="kVal"></span></label>
+        <input id="k" type="range" min="1" value="5">
+        <div class="box tint"><h4>Public point k × G on the toy curve</h4><div class="mono" id="kPoint"></div></div>
+        <p class="small">The points jump around with no visible pattern, so seeing the point doesn't reveal k. On this toy curve you could try every k, but on the real one you couldn't.</p>
+        <h3>A real secp256k1 key</h3>
+        <div class="row"><button class="primary" id="newKey">Generate a throwaway key</button></div>
+        <div class="chain">
+          <div class="box"><h4>Private key (32 random bytes)</h4><div class="mono" id="kPriv"></div></div>
+          <div class="box"><h4>Public key (a point: x, y)</h4><div class="mono" id="kPub"></div></div>
+          <div class="box tint"><h4>Ethereum address: last 20 bytes of keccak256(x || y)</h4><div class="mono" id="kAddr"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="sign">
+    <h2>2. Sign, then recover the signer</h2>
+    <p class="lead">Ethereum doesn't need the public key sent with a signature. It can recover the signer from the signature and the message, then check who that is.</p>
+    <label for="sMsg">Message</label>
+    <input id="sMsg" type="text" value="Batch root approved by Demo University">
+    <div class="row"><button class="primary" id="sGo">Sign</button></div>
+    <div class="grid2">
+      <div class="box"><h4>Digest z = keccak256(message)</h4><div class="mono" id="sZ"></div></div>
+      <div class="box"><h4>Random k, used once</h4><div class="mono" id="sK"></div></div>
+      <div class="box"><h4>r = x coordinate of k × G</h4><div class="mono" id="sR"></div></div>
+      <div class="box"><h4>s = (z + r × private key) / k</h4><div class="mono" id="sS"></div></div>
+    </div>
+    <h3>Verifier</h3>
+    <label for="sCheck">Message the verifier received</label>
+    <input id="sCheck" type="text">
+    <div class="box tint" style="margin-top:10px"><h4>Address recovered from (r, s, v) and this message</h4><div class="mono" id="sRec"></div></div>
+    <div id="sVerdict"></div>
+    <p class="note">Edit the received message and the recovered address changes completely. There's no "invalid" alarm in recovery: it simply gives someone else's address, so the system must compare it with the expected signer.</p>
+  </section>
+
+  <section class="card" id="eip712">
+    <h2>3. EIP-712: what the university actually signs</h2>
+    <p class="lead">The signature covers the batch and where it's meant to be used. Each attack below sends changed data to a simulated <code>publishBatch</code>, which applies the same checks as the contract.</p>
+    <div class="grid2">
+      <div><label>Batch root</label><div class="box mono" id="eRoot"></div></div>
+      <div class="grid2">
+        <div><label for="eCount">Certificate count</label><input id="eCount" type="number" value="4" min="1"></div>
+        <div><label for="eChain">Chain ID</label><input id="eChain" type="number" value="1337" min="1"></div>
+      </div>
+    </div>
+    <div class="row"><button class="primary" id="eSign">University signs in MetaMask</button></div>
+    <h3>How the digest is built</h3>
+    <div class="chain">
+      <div class="box"><h4>Domain separator = keccak256(type hash, name "AcademicCertificates", version "1", chain ID, contract)</h4><div class="mono" id="eDomain"></div></div>
+      <div class="box"><h4>Struct hash = keccak256(keccak256("Batch(bytes32 root,uint32 count)"), root, count)</h4><div class="mono" id="eStruct"></div></div>
+      <div class="box tint"><h4>Digest = keccak256(0x1901 || domain separator || struct hash)</h4><div class="mono" id="eDigest"></div></div>
+      <div class="box"><h4>Signature</h4><div class="mono" id="eSig">Not signed yet</div></div>
+    </div>
+    <h3>Registry state</h3>
+    <div class="grid2">
+      <div class="box"><h4>Approved issuer: Demo University</h4><div class="mono" id="eIssuer"></div></div>
+      <div class="box"><h4>Unapproved wallet: Stranger</h4><div class="mono" id="eStranger"></div></div>
+    </div>
+    <h3>Try to publish</h3>
+    <div class="attack-row">
+      <button id="aGood" disabled>Valid batch</button>
+      <button id="aPayer" disabled>Valid batch, another account pays gas</button>
+      <button id="aCount" disabled>Change the count</button>
+      <button id="aRoot" disabled>Swap the root</button>
+      <button id="aChain" disabled>Replay on another chain</button>
+      <button id="aContract" disabled>Replay on another contract</button>
+      <button id="aStranger">Stranger signs a batch</button>
+    </div>
+    <div id="eVerdict"></div>
+    <div class="box" id="eDetail" hidden><h4>Signer recovered by the contract</h4><div class="mono" id="eRec"></div></div>
+  </section>
+
+  <section class="card" id="malleable">
+    <h2>4. Signature malleability</h2>
+    <p class="lead">If (r, s) is valid, then so is (r, n − s) with the recovery bit flipped. Anyone can make this second form without the private key. The project rejects it by accepting only s in the lower half.</p>
+    <div class="row"><button class="primary" id="mGo">Create a signature and its twin</button></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Form</th><th>s</th><th>Maths recovers</th><th>OpenZeppelin ECDSA</th></tr></thead>
+      <tbody id="mRows"></tbody>
+    </table></div>
+    <p class="note">The twin recovers the same signer, so a system that used the signature as a unique ID could be fooled. Enforcing one valid form removes this. <code>publishBatch</code> also rejects duplicate roots.</p>
+  </section>
+
+  <section class="card" id="link">
+    <h2>5. Linking a wallet with <code>personal_sign</code></h2>
+    <p class="lead">A university must show it controls a wallet before an admin can approve it. Signing a one-time code proves this without revealing the private key or sending a transaction.</p>
+    <ol class="steps" id="lSteps">
+      <li><span><strong>Challenge:</strong> the server creates a random code and stores it on the user's row.</span></li>
+      <li><span><strong>Sign:</strong> the wallet adds the prefix <code>"\x19Ethereum Signed Message:\n" + length</code>, hashes the message and signs it.</span></li>
+      <li><span><strong>Verify:</strong> the server recovers the signer, compares it with the claimed wallet and clears the code.</span></li>
+    </ol>
+    <div class="row">
+      <button class="primary" id="lChallenge">1. Request a challenge</button>
+      <button id="lSign" disabled>2. Sign with the wallet</button>
+      <button id="lSend" disabled>3. Send to the server</button>
+      <button id="lReplay" disabled>Replay the same signature</button>
+      <button id="lWrong" disabled>Send another wallet's signature</button>
+    </div>
+    <div class="grid2">
+      <div class="box"><h4>Message shown in MetaMask</h4><div class="msg" id="lMsg">No challenge yet</div></div>
+      <div class="box tint"><h4>Server state</h4><div class="msg" id="lState"></div></div>
+    </div>
+    <div id="lVerdict"></div>
+  </section>
+
+  <section class="card" id="reuse">
+    <h2>6. Why k must be secret and never repeat</h2>
+    <p class="lead">This shows why signing has to be left to a wallet. If two signatures share a k, simple algebra reveals the private key.</p>
+    <div class="row"><button class="primary" id="rGo">Sign two messages with the same k, then attack</button></div>
+    <div class="box"><pre class="mono" style="margin:0;white-space:pre-wrap">k = (z1 − z2) / (s1 − s2)  mod n
+private key = (s1 × k − z1) / r  mod n</pre></div>
+    <div class="grid2" style="margin-top:10px">
+      <div class="box"><h4>Real private key</h4><div class="mono" id="rReal"></div></div>
+      <div class="box"><h4>Key the attacker computed</h4><div class="mono" id="rFound"></div></div>
+    </div>
+    <div id="rVerdict"></div>
+    <p class="note">The project never handles k. MetaMask signs, and modern wallets derive k deterministically (RFC 6979), so it's not left to a random generator.</p>
+  </section>
+  <footer>Part of the CertChain group docs. See <a href="README.md">README.md</a> for the full explanation.</footer>
+</main>
+<script src="visual.js"></script>
+</body>
+</html>

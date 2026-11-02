@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encryption Visual</title>
+<link rel="stylesheet" href="visual.css">
+<style>
+  .bytes { display: flex; flex-wrap: wrap; gap: 2px; font: 12px/1 var(--mono); margin: 8px 0; }
+  .bytes button { width: 25px; height: 24px; padding: 0; border: 0; border-radius: 3px; font: 12px/1 var(--mono); color: var(--ink); }
+  .bytes button:hover { outline: 2px solid var(--ink); background-color: inherit; }
+  .b-iv { background: #fbe7c6; } .b-ct { background: #dce7f7; } .b-tag { background: #dcf1e4; }
+  .bytes button.flipped { background: var(--bad); color: #fff; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  canvas { width: 100%; max-width: 240px; image-rendering: pixelated; border: 1px solid var(--rule); border-radius: 4px; display: block; }
+  figure { margin: 0; } figcaption { font-size: 13.5px; margin-top: 6px; }
+  .xor td { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  .xor th:first-child { width: 170px; }
+  .yes { color: var(--good); font-weight: 600; } .no { color: var(--muted); } .leak { color: var(--bad); font-weight: 600; }
+  tr.selected td { background: var(--warn-bg); }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>Encryption</h1>
+    <p>AES-256-GCM for PDFs and for stored credentials. The encryption on this page is real and runs in your browser through Web Crypto.</p>
+  </header>
+  <nav class="jump">
+    <a href="#gcm">1. Encrypt and tamper</a><a href="#ctr">2. Inside GCM</a><a href="#ecb">3. Why modes matter</a><a href="#nonce">4. Reusing an IV</a><a href="#seal">5. Sealing</a><a href="#who">6. Who can read what</a>
+  </nav>
+
+  <section class="card" id="gcm">
+    <h2>1. Encrypt a PDF, then try to tamper with it</h2>
+    <p class="lead">This uses the same format as <code>encryptPdf</code>: a new 32-byte key, a random 12-byte IV, and the IV stored in front of the ciphertext.</p>
+    <label for="plain">Content of the PDF</label>
+    <textarea id="plain">%PDF-1.4 Certificate of Sample Student, CGPA 8.72</textarea>
+    <div class="row"><button class="primary" id="encGo">Encrypt</button></div>
+    <div class="grid2">
+      <div class="box tint"><h4>Key (goes into the student's credential)</h4><div class="mono" id="keyOut"></div></div>
+      <div class="box tint"><h4>AAD (authenticated, but not encrypted)</h4><div class="mono">academic-certificate-pdf-v1</div></div>
+    </div>
+    <h3>What gets uploaded to IPFS</h3>
+    <div class="legend">
+      <span><i class="b-iv"></i>IV (12 bytes)</span><span><i class="b-ct"></i>Ciphertext</span><span><i class="b-tag"></i>Authentication tag (16 bytes)</span>
+    </div>
+    <div class="bytes" id="bytes" aria-label="Encrypted bytes. Select a byte to change it."></div>
+    <p class="small muted">Select any byte to change one of its bits. The page tries to decrypt straight away.</p>
+    <div id="decVerdict"></div>
+    <div class="row">
+      <button id="restore">Undo my changes</button>
+      <button id="wrongKey">Decrypt with the wrong key</button>
+      <button id="wrongAad">Decrypt with a different AAD</button>
+    </div>
+    <div class="box"><h4>Decrypted output</h4><div class="mono" id="decOut"></div></div>
+  </section>
+
+  <section class="card" id="ctr">
+    <h2>2. Inside GCM</h2>
+    <p class="lead">GCM has two parts. Counter mode provides confidentiality, and GHASH produces the tag. This table rebuilds the ciphertext from section 1 using only AES and XOR.</p>
+    <div class="scroll"><table class="xor">
+      <thead><tr><th>Block</th><th>Counter</th><th>Keystream = AES(key, counter)</th><th>Plaintext</th><th>Ciphertext = keystream XOR plaintext</th></tr></thead>
+      <tbody id="ctrRows"></tbody>
+    </table></div>
+    <div id="ctrVerdict"></div>
+    <ol class="steps">
+      <li><span><strong>Counter blocks:</strong> the 12-byte IV is followed by a 4-byte counter. Counter 1 is kept for the tag, and data starts at counter 2.</span></li>
+      <li><span><strong>Keystream:</strong> AES encrypts each counter block. AES only ever runs forward, even when decrypting.</span></li>
+      <li><span><strong>Encrypt:</strong> the keystream is XORed with the plaintext. Decrypting does the same XOR.</span></li>
+      <li><span><strong>Tag:</strong> GHASH combines the AAD and ciphertext, then the result is masked with AES(key, counter 1). A wrong tag means no output at all.</span></li>
+    </ol>
+  </section>
+
+  <section class="card" id="ecb">
+    <h2>3. Why the mode matters</h2>
+    <p class="lead">The same AES key can hide a document or leak its layout, depending on how it's used. This is a real AES encryption of the image's pixels. Each 16-byte block is drawn as one shade, taken from its first encrypted byte.</p>
+    <div class="grid3">
+      <figure><canvas id="imgPlain" width="120" height="120"></canvas><figcaption><strong>Original</strong></figcaption></figure>
+      <figure><canvas id="imgEcb" width="120" height="120"></canvas><figcaption><strong>ECB:</strong> identical blocks encrypt to identical output, so the layout shows.</figcaption></figure>
+      <figure><canvas id="imgGcm" width="120" height="120"></canvas><figcaption><strong>GCM:</strong> every block gets a different keystream, so it looks like noise.</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="card" id="nonce">
+    <h2>4. Why an IV must never repeat under one key</h2>
+    <p class="lead">Two messages are encrypted with the same key and the same IV. An attacker who has never seen the key XORs the two ciphertexts.</p>
+    <div class="grid2">
+      <div><label for="n1">Message 1</label><input id="n1" type="text" value="CGPA of student A is 8.72"></div>
+      <div><label for="n2">Message 2 (the attacker knows this one)</label><input id="n2" type="text" value="AAAAAAAAAAAAAAAAAAAAAAAAA"></div>
+    </div>
+    <div class="row"><button class="primary" id="nGo">Encrypt both with one IV, then attack</button></div>
+    <div class="box"><h4>C1 XOR C2 (the keystream cancels out, leaving P1 XOR P2)</h4><div class="mono" id="nXor"></div></div>
+    <div id="nVerdict"></div>
+    <p class="note">Reusing an IV in GCM also weakens the authentication key, so forgery becomes possible too. The project avoids this by using a new key per PDF and a random 96-bit IV per message.</p>
+  </section>
+
+  <section class="card" id="seal">
+    <h2>5. Sealing credentials in SQLite</h2>
+    <p class="lead">This matches <code>seal()</code> on the server. One key in <code>server/data/secret.key</code> protects every row, and each value gets its own IV.</p>
+    <label for="sealIn">Credential to store</label>
+    <textarea id="sealIn">{"certRoot":"0x8f3a…","pdfKey":"0x41d0…","fields":{"cgpa":{"value":"8.72","salt":"0x77c2…"}}}</textarea>
+    <div class="row"><button class="primary" id="sealGo">Seal it twice</button></div>
+    <div class="grid2">
+      <div class="box tint"><h4>Row 1 in <code>credential_sealed</code>: iv.tag.body</h4><div class="mono" id="seal1"></div></div>
+      <div class="box tint"><h4>Row 2, same text</h4><div class="mono" id="seal2"></div></div>
+    </div>
+    <p class="note">Identical text gives different stored values, because the IV is new each time. So nobody can tell from the database that two rows hold the same data.</p>
+  </section>
+
+  <section class="card" id="who">
+    <h2>6. Who can read what</h2>
+    <p class="lead">Encryption only moves the problem to protecting the key. Choose a party to see what it can read.</p>
+    <div class="row">
+      <label for="party" style="margin:0">Party</label>
+      <select id="party" style="width:auto;max-width:100%"></select>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>Data</th><th>Can this party read it?</th><th>Why</th></tr></thead>
+      <tbody id="partyRows"></tbody>
+    </table></div>
+  </section>
+  <footer>Part of the CertChain group docs. See <a href="README.md">README.md</a> for the full explanation.</footer>
+</main>
+<script src="visual.js"></script>
+</body>
+</html>

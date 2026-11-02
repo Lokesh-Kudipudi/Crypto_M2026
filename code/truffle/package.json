@@ -1,0 +1,17 @@
+{
+  "name": "truffle-project",
+  "version": "0.1.0",
+  "description": "Truffle project with SimpleStorage contract",
+  "scripts": {
+    "test": "truffle test",
+    "chain": "mkdir -p .ganache && ganache --chain.chainId 1337 --chain.networkId 1337 --wallet.deterministic --database.dbPath .ganache"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.9.6",
+    "@truffle/hdwallet-provider": "^2.1.7"
+  },
+  "devDependencies": {
+    "ganache": "^7.9.2",
+    "truffle": "^5.11.5"
+  }
+}

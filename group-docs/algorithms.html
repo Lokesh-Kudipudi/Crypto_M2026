@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cryptographic Algorithms</title>
+<link rel="stylesheet" href="algorithms.css">
+</head>
+<body>
+<div class="page">
+<aside class="toc" aria-label="Contents">
+  <div class="toc-title">Contents</div>
+  <nav id="toc">
+    <a href="#overview">Overview</a>
+    <h2>Hashing</h2>
+    <a href="#sha256">SHA-256</a><a href="#tokens">Tokens and claim codes</a><a href="#hmac">HMAC and PBKDF2</a><a href="#scrypt">scrypt</a>
+    <h2>Encryption</h2>
+    <a href="#aes">AES-256</a><a href="#gcm">GCM mode</a><a href="#formats">PDF and sealing formats</a>
+    <h2>Digital signatures</h2>
+    <a href="#curve">Elliptic curves</a><a href="#ecdsa">ECDSA</a><a href="#recover">Recovery and malleability</a><a href="#eip712">EIP-712</a><a href="#personal">personal_sign</a>
+    <h2>Commitments and proofs</h2>
+    <a href="#keccak">Keccak-256</a><a href="#commit">Salted commitments</a><a href="#merkle">Merkle trees</a><a href="#disclosure">Selective disclosure</a>
+    <h2>Reference</h2>
+    <a href="#summary">Summary table</a>
+  </nav>
+</aside>
+<main>
+  <header class="top">
+    <h1>Cryptographic Algorithms in CertChain</h1>
+    <p>An in-depth guide to how each algorithm works inside, with step-through labs. All values are computed live in your browser by code written out on this page.</p>
+  </header>
+
+  <section class="card" id="overview">
+    <h2>Overview</h2>
+    <p class="lead">Each algorithm protects a different part of a certificate's journey.</p>
+    <div class="flow">
+      <div><b>University browser</b>SHA-256 the PDF, encrypt it with AES-256-GCM, commit fields with salted Keccak-256, build Merkle trees, sign with ECDSA and EIP-712</div>
+      <span>→</span>
+      <div><b>Blockchain and IPFS</b>The batch root, issuer and count on-chain. The encrypted PDF on IPFS</div>
+      <span>→</span>
+      <div><b>Student</b>Reveals chosen fields with salts and Merkle proofs</div>
+      <span>→</span>
+      <div><b>Verifier</b>Recomputes hashes and recovers the signer from the signature, with no wallet needed</div>
+    </div>
+    <div class="flow">
+      <div><b>Server</b>scrypt for passwords, SHA-256 for tokens, AES-256-GCM for stored credentials, and <code>personal_sign</code> recovery for wallet linking</div>
+    </div>
+    <h3>Notation</h3>
+    <div class="scroll"><table>
+      <tbody>
+        <tr><td><code>||</code></td><td>Joining bytes together</td><td><code>XOR</code></td><td>Bitwise exclusive or</td></tr>
+        <tr><td><code>ROTR n</code></td><td>Rotate a word right by n bits</td><td><code>SHR n</code></td><td>Shift a word right by n bits</td></tr>
+        <tr><td><code>mod n</code></td><td>Remainder after dividing by n</td><td><code>a / b mod n</code></td><td>a times the modular inverse of b</td></tr>
+      </tbody>
+    </table></div>
+    <h3>Self-check</h3>
+    <p class="small muted">When this page loads, it compares its hand-written algorithms with published test vectors and your browser's built-in cryptography.</p>
+    <div class="tests" id="tests"></div>
+  </section>
+
+  <div class="group-head" id="g-hash"><h2>Hashing</h2><p>Owner: Suresh. Fixed-size fingerprints that can't be reversed.</p></div>
+
+  <section class="card" id="sha256">
+    <h2>SHA-256</h2>
+    <div class="meta"><span class="tag">Input: any length</span><span class="tag">Output: 256 bits</span><span class="tag">Used for: PDF hash, token hash</span><span class="tag">Standard: FIPS 180-4</span></div>
+    <p>SHA-256 uses the <strong>Merkle–Damgård construction</strong>. It splits the message into 512-bit blocks and feeds each one, along with the current 256-bit state, through a compression function.</p>
+    <div class="flow"><div><b>Initial state</b>H0</div><span>→</span><div><b>Compress</b>block 1</div><span>→</span><div><b>Compress</b>block 2</div><span>→</span><div><b>…</b>block n</div><span>→</span><div><b>Digest</b>final state</div></div>
+    <h3>Step 1: Padding</h3>
+    <p>Append the byte <code>0x80</code>, then zero bytes, then the message's length in bits as a 64-bit number, so the total is a multiple of 64 bytes. Including the length stops messages from sharing a padded form.</p>
+    <h3>Step 2: Constants</h3>
+    <p>The starting state is the first 32 bits of the fractional parts of the square roots of the first 8 primes. The 64 round constants come from the cube roots of the first 64 primes. Using such public values shows no hidden weakness was chosen. This page computes them that way.</p>
+    <h3>Step 3: Message schedule</h3>
+    <p>The 16 words of a block are expanded to 64, so that each input bit affects many rounds:</p>
+    <pre class="formula">W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]    (mod 2^32)
+σ0(x) = ROTR 7(x)  XOR ROTR 18(x) XOR SHR 3(x)
+σ1(x) = ROTR 17(x) XOR ROTR 19(x) XOR SHR 10(x)</pre>
+    <h3>Step 4: 64 rounds</h3>
+    <p>Eight registers, a to h, start from the state. Each round computes:</p>
+    <pre class="formula">Σ1(e)     = ROTR 6(e) XOR ROTR 11(e) XOR ROTR 25(e)
+Ch(e,f,g) = (e AND f) XOR ((NOT e) AND g)       e chooses between f and g
+T1        = h + Σ1(e) + Ch(e,f,g) + K[t] + W[t]
+
+Σ0(a)     = ROTR 2(a) XOR ROTR 13(a) XOR ROTR 22(a)
+Maj(a,b,c)= (a AND b) XOR (a AND c) XOR (b AND c)  the majority of each bit
+T2        = Σ0(a) + Maj(a,b,c)
+
+h=g  g=f  f=e  e=d+T1  d=c  c=b  b=a  a=T1+T2</pre>
+    <p>The mix of addition (non-linear over XOR), rotation (spreads bits) and Boolean functions (non-linear per bit) creates the avalanche effect.</p>
+    <h3>Step 5: Feed-forward</h3>
+    <p>The registers are added to the block's starting state. This makes the compression function one-way: even someone who could run the rounds backwards wouldn't know which starting state to subtract.</p>
+    <div class="lab">
+      <h4>Lab: step through SHA-256</h4>
+      <label for="shaIn">Message</label><input id="shaIn" type="text" value="CGPA 8.72">
+      <h3>Padded block <span class="small muted">(message, padding, length; a long message shows its first block only)</span></h3>
+      <div class="chips" id="shaPad"></div>
+      <div class="row"><label for="shaRound" style="margin:0">Round: <span id="shaRoundVal"></span> of 63</label></div>
+      <input id="shaRound" type="range" min="0" max="63" value="0">
+      <h3>Registers after this round</h3>
+      <div class="regs" id="shaRegs"></div>
+      <div class="scroll" style="margin-top:8px"><table><tbody id="shaCalc"></tbody></table></div>
+      <h3>Message schedule <span class="small muted">(this round's word is highlighted)</span></h3>
+      <div class="chips" id="shaW"></div>
+      <div class="box tint" style="margin-top:10px"><h4>Digest</h4><div class="mono" id="shaOut"></div></div>
+    </div>
+    <h3>Security</h3>
+    <ul>
+      <li><strong>Preimage:</strong> about 2<sup>256</sup> work. <strong>Collision:</strong> about 2<sup>128</sup> work, because of the birthday bound.</li>
+      <li><strong>Length extension:</strong> knowing H(m) allows computing H(m || padding || x) without knowing m. So <code>SHA-256(secret || message)</code> is unsafe as a MAC, which is why HMAC exists. The project doesn't use that pattern.</li>
+    </ul>
+    <p class="small muted">In the code: <code>certcrypto.mjs:130</code> and <code>security.js:25</code>.</p>
+  </section>
+
+  <section class="card" id="tokens">
+    <h2>Tokens and claim codes</h2>
+    <div class="meta"><span class="tag">Token: 256 bits</span><span class="tag">Claim code: about 98 bits</span><span class="tag">Stored as: SHA-256 hash</span></div>
+    <p>These rely on <strong>entropy</strong>. A secure random generator makes every value equally likely, so an attacker has no better strategy than trying values at random.</p>
+    <pre class="formula">Token:      randomBytes(32) → cookie or share link
+Stored:     SHA-256(token)
+Claim code: 20 characters from a 30-character alphabet
+Entropy:    20 × log2(30) ≈ 98.1 bits</pre>
+    <p>The hash doesn't need to be slow. At a trillion guesses per second, searching all 2<sup>98</sup> claim codes would take about 10 billion years, and rate limiting stops online guessing long before that.</p>
+    <h3>Rejection sampling</h3>
+    <p>A random byte has 256 values, and 256 isn't a multiple of 30. Using <code>byte % 30</code> directly would make the first 16 characters slightly more likely (9 in 256, against 8 in 256). So bytes of 240 or above are thrown away, because 240 is exactly 8 × 30. Every character is then equally likely.</p>
+    <div class="lab">
+      <h4>Lab: generate a claim code</h4>
+      <button class="primary" id="claimGo">Generate</button>
+      <div class="grid2" style="margin-top:10px">
+        <div class="box tint"><h4>Claim code (shown to the university once)</h4><div class="mono" id="claimOut"></div></div>
+        <div class="box"><h4>SHA-256, the only value stored</h4><div class="mono" id="claimHash"></div></div>
+      </div>
+      <div class="small" id="claimNote" style="margin-top:8px"></div>
+    </div>
+    <p class="small muted">In the code: <code>security.js:24</code> to <code>security.js:36</code>.</p>
+  </section>
+
+  <section class="card" id="hmac">
+    <h2>HMAC and PBKDF2</h2>
+    <div class="meta"><span class="tag">Inside scrypt</span><span class="tag">HMAC: RFC 2104</span><span class="tag">PBKDF2: RFC 8018</span></div>
+    <p>The project doesn't call these directly, but scrypt starts and ends with them.</p>
+    <pre class="formula">HMAC(K, m) = SHA-256( (K XOR opad) || SHA-256( (K XOR ipad) || m ) )
+ipad = 0x36 repeated, opad = 0x5c repeated, K padded to 64 bytes
+
+PBKDF2 block i = HMAC(password, salt || INT(i)), then XORed with c - 1 more HMAC iterations</pre>
+    <p>The nested hash removes the length-extension problem. scrypt uses PBKDF2 with just one iteration (c = 1), since memory-hardness comes from the step in the middle. PBKDF2 simply stretches and compresses the data here.</p>
+    <div class="lab">
+      <h4>Lab: compute an HMAC</h4>
+      <div class="grid2"><div><label for="hKey">Key</label><input id="hKey" type="text" value="secret"></div><div><label for="hMsg">Message</label><input id="hMsg" type="text" value="hello"></div></div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="box"><h4>Inner hash</h4><div class="mono" id="hInner"></div></div>
+        <div class="box tint"><h4>HMAC result</h4><div class="mono" id="hOut"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="scrypt">
+    <h2>scrypt</h2>
+    <div class="meta"><span class="tag">Used for: passwords</span><span class="tag">N = 2^15, r = 8, p = 1</span><span class="tag">Memory: 32 MiB</span><span class="tag">Standard: RFC 7914</span></div>
+    <p>scrypt is a <strong>memory-hard</strong> function. GPUs and custom chips run hashes cheaply in parallel, but memory is expensive to multiply. So each guess is made to need a lot of it.</p>
+    <div class="flow"><div><b>PBKDF2</b>Password and salt become a block B</div><span>→</span><div><b>ROMix</b>Fill memory, then read it at unpredictable positions</div><span>→</span><div><b>PBKDF2</b>Password and mixed B become the output</div></div>
+    <h3>ROMix: the memory-hard core</h3>
+    <pre class="formula">X = B
+for i = 0 to N-1:      V[i] = X;  X = BlockMix(X)        fill N blocks
+for i = 0 to N-1:      j = Integerify(X) mod N
+                       X = BlockMix(X XOR V[j])          read an unpredictable block
+return X</pre>
+    <p>The value of <code>j</code> depends on the current data, so it can't be known in advance. An attacker who skips storing V has to recompute blocks when they're needed, which costs far more time. Reducing memory costs extra time, and the product of the two stays high.</p>
+    <h3>BlockMix</h3>
+    <p>BlockMix runs Salsa20/8 across the <code>2r</code> 64-byte pieces of a block, each chained to the one before, and then shuffles the outputs. Here a block is <code>128 × r</code> = 1 KiB.</p>
+    <pre class="formula">X = B[2r-1]
+for i = 0 to 2r-1:  X = Salsa20/8(X XOR B[i]);  Y[i] = X
+output = Y0, Y2, ..., Y[2r-2], Y1, Y3, ..., Y[2r-1]</pre>
+    <h3>Salsa20/8</h3>
+    <p>This is a fast 64-byte scrambler made of only addition, rotation and XOR. It treats the input as 16 words and applies four-word "quarter rounds", first down columns and then along rows, for 8 rounds in total:</p>
+    <pre class="formula">b ^= (a + d) &lt;&lt;&lt; 7
+c ^= (b + a) &lt;&lt;&lt; 9
+d ^= (c + b) &lt;&lt;&lt; 13
+a ^= (d + c) &lt;&lt;&lt; 18</pre>
+    <h3>Cost of one password check</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Measure</th><th>Formula</th><th>Project value</th></tr></thead>
+      <tbody>
+        <tr><td>Memory</td><td>128 × N × r</td><td>32 MiB</td></tr>
+        <tr><td>BlockMix calls</td><td>2 × N × p</td><td>65,536</td></tr>
+        <tr><td>Salsa20/8 calls</td><td>2 × N × 2r × p</td><td>1,048,576</td></tr>
+      </tbody>
+    </table></div>
+    <div class="lab">
+      <h4>Lab: watch ROMix read memory</h4>
+      <div class="grid2">
+        <div><label for="scPw">Password</label><input id="scPw" type="text" value="correct horse"></div>
+        <div><label for="scN">N, the number of blocks (small, so it fits on screen)</label><select id="scN"><option>16</option><option selected>64</option><option>256</option></select></div>
+      </div>
+      <p class="small muted">Each cell is a memory block. Its shade shows how many times phase 2 read it, and the numbers are the real values of j.</p>
+      <div class="mem" id="scMem" role="img" aria-label="Memory blocks shaded by the number of reads"></div>
+      <div class="box"><h4>Read order j</h4><div class="mono" id="scOrder"></div></div>
+      <div class="row"><button id="scFull">Run at the project's settings</button></div>
+      <div class="small" id="scFullOut"></div>
+    </div>
+    <p class="small muted">In the code: <code>security.js:7</code> to <code>security.js:22</code>.</p>
+  </section>
+
+  <div class="group-head" id="g-enc"><h2>Encryption</h2><p>Owner: Rishitha. Hiding data with a key, and detecting changes to it.</p></div>
+
+  <section class="card" id="aes">
+    <h2>AES-256</h2>
+    <div class="meta"><span class="tag">Block: 128 bits</span><span class="tag">Key: 256 bits</span><span class="tag">Rounds: 14</span><span class="tag">Standard: FIPS 197</span></div>
+    <p>AES is a <strong>substitution-permutation network</strong>. It arranges 16 bytes in a 4 × 4 grid, filled column by column, and alternates confusion (hiding the link to the key) with diffusion (spreading each bit's influence).</p>
+    <h3>The four operations</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Operation</th><th>What it does</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><strong>SubBytes</strong></td><td>Replaces each byte using the S-box: its inverse in GF(2<sup>8</sup>), followed by an affine transform</td><td>The only non-linear step, which stops algebraic attacks</td></tr>
+        <tr><td><strong>ShiftRows</strong></td><td>Rotates row r left by r positions</td><td>Moves bytes between columns</td></tr>
+        <tr><td><strong>MixColumns</strong></td><td>Multiplies each column by a fixed matrix in GF(2<sup>8</sup>)</td><td>Each input byte affects all 4 output bytes of its column</td></tr>
+        <tr><td><strong>AddRoundKey</strong></td><td>XORs in that round's 16-byte key</td><td>The only step that uses the key</td></tr>
+      </tbody>
+    </table></div>
+    <h3>Round structure</h3>
+    <pre class="formula">AddRoundKey(0)
+Rounds 1 to 13:  SubBytes → ShiftRows → MixColumns → AddRoundKey
+Round 14:        SubBytes → ShiftRows → AddRoundKey     no MixColumns</pre>
+    <p>After two rounds, every output byte depends on every input byte.</p>
+    <h3>Arithmetic in GF(2<sup>8</sup>)</h3>
+    <p>Bytes are treated as polynomials with bits as coefficients. Addition is XOR. Multiplication works modulo <code>x⁸ + x⁴ + x³ + x + 1</code> (0x11B). Multiplying by 2 is a shift, followed by XOR with 0x1B if the top bit was set.</p>
+    <pre class="formula">MixColumns:  [ 2 3 1 1 ]
+             [ 1 2 3 1 ]  × column
+             [ 1 1 2 3 ]
+             [ 3 1 1 2 ]</pre>
+    <h3>Key schedule</h3>
+    <p>The 32-byte key expands into 15 round keys, made of 60 four-byte words:</p>
+    <pre class="formula">w[i] = w[i-8] XOR f(w[i-1])
+every 8th word:      f = SubWord(RotWord(x)) XOR Rcon
+i mod 8 = 4:         f = SubWord(x)
+otherwise:           f = x</pre>
+    <div class="lab">
+      <h4>Lab: step through one AES-256 block</h4>
+      <div class="grid2">
+        <div><label for="aesIn">16 bytes of plaintext</label><input id="aesIn" type="text" value="Certificate 0042" maxlength="16"></div>
+        <div class="box tint"><h4>Key</h4><div class="mono" id="aesKey"></div></div>
+      </div>
+      <div class="row"><button id="aesNewKey">New key</button><span class="small" id="aesAvalanche"></span></div>
+      <label for="aesStep">Step: <span id="aesStepVal"></span></label>
+      <input id="aesStep" type="range" min="0" value="0">
+      <div class="grid2" style="margin-top:10px">
+        <div><div class="state-grid" id="aesState"></div></div>
+        <div>
+          <div class="verdict info" id="aesOp"></div>
+          <div class="small" id="aesDesc"></div>
+          <div class="box" id="aesRkBox" style="margin-top:8px" hidden><h4>Round key used</h4><div class="mono" id="aesRk"></div></div>
+        </div>
+      </div>
+      <div class="box tint" style="margin-top:10px"><h4>Ciphertext block</h4><div class="mono" id="aesOut"></div></div>
+    </div>
+    <h3>Security</h3>
+    <p>The best known attacks on full AES-256 are only slightly better than trying every key (about 2<sup>254</sup>). Grover's quantum algorithm would reduce the effective strength to about 128 bits, which is still considered secure.</p>
+  </section>
+
+  <section class="card" id="gcm">
+    <h2>GCM mode</h2>
+    <div class="meta"><span class="tag">Type: AEAD</span><span class="tag">IV: 96 bits</span><span class="tag">Tag: 128 bits</span><span class="tag">Standard: NIST SP 800-38D</span></div>
+    <p>GCM combines <strong>counter mode</strong> for confidentiality and <strong>GHASH</strong> for authentication. AES only runs forward, even for decryption.</p>
+    <h3>Part 1: Counter mode</h3>
+    <pre class="formula">J0        = IV || 00000001                  reserved for the tag
+Counter i = IV || (i + 1)                   data starts at counter 2
+C[i]      = P[i] XOR AES(K, Counter i)</pre>
+    <h3>Part 2: GHASH</h3>
+    <p>GHASH treats 16-byte blocks as elements of GF(2<sup>128</sup>), using the polynomial <code>x¹²⁸ + x⁷ + x² + x + 1</code>. Addition is XOR, and each step multiplies by a secret value <code>H</code>:</p>
+    <pre class="formula">H    = AES(K, 16 zero bytes)
+Y0   = 0
+Y[i] = (Y[i-1] XOR block[i]) × H           AAD blocks, ciphertext blocks, then a lengths block
+S    = final Y
+Tag  = S XOR AES(K, J0)</pre>
+    <p>This evaluates a polynomial at the secret point H. Without H, an attacker can't predict the tag of changed data. The forgery chance is about <code>L / 2¹²⁸</code> for a message of L blocks. The mask <code>AES(K, J0)</code> hides H-related information from the output.</p>
+    <h3>Why an IV must never repeat</h3>
+    <pre class="formula">C1 XOR C2 = P1 XOR P2                      the plaintexts leak
+Tag1 XOR Tag2 = polynomial in H             the attacker can solve for H, then forge</pre>
+    <p>With random 96-bit IVs, NIST limits use to about 2<sup>32</sup> messages per key. The project's PDFs each get their own key, so an IV repeat isn't a realistic concern for them.</p>
+    <div class="lab">
+      <h4>Lab: GCM by hand</h4>
+      <label for="gcmIn">Plaintext</label><input id="gcmIn" type="text" value="%PDF-1.4 Certificate of Sample Student">
+      <p class="small muted">The key and IV are random. AAD is <code>academic-certificate-pdf-v1</code>, as in the project.</p>
+      <div class="grid2">
+        <div class="box"><h4>H = AES(K, zeros)</h4><div class="mono" id="gcmH"></div></div>
+        <div class="box"><h4>J0 = IV || 1</h4><div class="mono" id="gcmJ"></div></div>
+      </div>
+      <h3>Counter mode</h3>
+      <div class="scroll"><table><thead><tr><th>Counter block</th><th>Keystream</th><th>Ciphertext</th></tr></thead><tbody id="gcmCtr"></tbody></table></div>
+      <h3>GHASH</h3>
+      <div class="scroll"><table><thead><tr><th>Input</th><th>Block</th><th>Y after multiplying by H</th></tr></thead><tbody id="gcmGhash"></tbody></table></div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="box tint"><h4>Tag = S XOR AES(K, J0)</h4><div class="mono" id="gcmTag"></div></div>
+        <div class="box"><h4>Tag from the browser's own AES-GCM</h4><div class="mono" id="gcmReal"></div></div>
+      </div>
+      <div id="gcmVerdict"></div>
+    </div>
+  </section>
+
+  <section class="card" id="formats">
+    <h2>PDF and sealing formats</h2>
+    <p>The project uses AES-256-GCM in two places, with differences that follow from what each protects against.</p>
+    <div class="scroll"><table>
+      <thead><tr><th></th><th>PDF encryption</th><th>Credential sealing</th></tr></thead>
+      <tbody>
+        <tr><td>Where it runs</td><td>University's browser (Web Crypto)</td><td>Server (<code>node:crypto</code>)</td></tr>
+        <tr><td>Key</td><td>New 32 bytes per PDF, held in the credential</td><td>One 32-byte key in <code>secret.key</code></td></tr>
+        <tr><td>IV</td><td>12 random bytes</td><td>12 random bytes per value</td></tr>
+        <tr><td>AAD</td><td><code>academic-certificate-pdf-v1</code></td><td>None</td></tr>
+        <tr><td>Layout</td><td class="mono-cell">IV || ciphertext || tag</td><td class="mono-cell">base64(iv).base64(tag).base64(body)</td></tr>
+        <tr><td>Protects against</td><td>Anyone reading IPFS</td><td>A copied database file</td></tr>
+        <tr><td>Doesn't protect against</td><td>Whoever holds the credential</td><td>A compromised server, or a copy of both the database and key</td></tr>
+      </tbody>
+    </table></div>
+    <p class="small muted">In the code: <code>certcrypto.mjs:135</code> and <code>security.js:42</code>.</p>
+  </section>
+
+  <div class="group-head" id="g-sig"><h2>Digital signatures</h2><p>Owner: Nanda. Proving who approved something.</p></div>
+
+  <section class="card" id="curve">
+    <h2>Elliptic curves</h2>
+    <div class="meta"><span class="tag">Curve: secp256k1</span><span class="tag">y² = x³ + 7</span><span class="tag">Security: about 128 bits</span></div>
+    <p>Points on the curve form a group. There's a rule for adding two points that gives a third, all with arithmetic modulo a prime p.</p>
+    <pre class="formula">Adding P and Q:   λ = (y2 - y1) / (x2 - x1)
+Doubling P:       λ = 3·x1² / (2·y1)
+Then:             x3 = λ² - x1 - x2
+                  y3 = λ(x1 - x3) - y1</pre>
+    <p>Geometrically, a line through P and Q meets the curve at a third point, and reflecting that point over the x-axis gives the sum. Over a finite field, the picture becomes scattered points, but the algebra still holds.</p>
+    <h3>Scalar multiplication</h3>
+    <p>Computing <code>k × G</code> doesn't need k additions. <strong>Double-and-add</strong> reads k's binary digits and takes only about 256 doublings and 128 additions for a 256-bit k.</p>
+    <h3>The hard problem</h3>
+    <p>Given <code>Q = k × G</code>, finding k is the <strong>elliptic curve discrete logarithm problem</strong>. The best known classical attack, Pollard's rho, takes about √n steps, so about 2<sup>128</sup> on this curve. Shor's algorithm on a large quantum computer would break it.</p>
+    <div class="lab">
+      <h4>Lab: double-and-add on a toy curve</h4>
+      <div class="grid2">
+        <div>
+          <svg id="toyCurve" viewBox="0 0 340 340" role="img" aria-label="Points of the toy elliptic curve, showing the chosen multiple of G"></svg>
+          <p class="small muted">y² = x³ + 7 mod 97, a group of <span id="toyOrder"></span> points. G is the hollow dot, and k × G is the filled one.</p>
+        </div>
+        <div>
+          <label for="toyK">k: <span id="toyKVal"></span></label><input id="toyK" type="range" min="1" value="23">
+          <div class="scroll"><table><thead><tr><th>Bit</th><th>Operation</th><th>Result</th></tr></thead><tbody id="toyRows"></tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="ecdsa">
+    <h2>ECDSA</h2>
+    <div class="meta"><span class="tag">Used for: batch and wallet signatures</span><span class="tag">Signature: r, s, v</span><span class="tag">Standard: SEC 1, FIPS 186</span></div>
+    <pre class="formula">Key pair    private d,  public Q = d × G
+
+Sign z      choose secret k
+            R = k × G
+            r = R.x mod n
+            s = (z + r·d) / k  mod n
+
+Verify      u1 = z / s,  u2 = r / s
+            R' = u1 × G + u2 × Q
+            valid if R'.x mod n = r</pre>
+    <h3>Why verification works</h3>
+    <pre class="formula">R' = (z/s) × G + (r/s) × (d × G)
+   = ((z + r·d) / s) × G
+   = k × G                 because s = (z + r·d) / k
+   = R</pre>
+    <div class="lab">
+      <h4>Lab: ECDSA with small numbers</h4>
+      <p class="small muted">This uses the toy curve above, with n = <span id="eN"></span>, so you can check the arithmetic by hand.</p>
+      <div class="grid3">
+        <div><label for="eD">Private key d</label><input id="eD" type="number" min="1" value="17"></div>
+        <div><label for="eK">Secret k</label><input id="eK" type="number" min="1" value="29"></div>
+        <div><label for="eZ">Message hash z</label><input id="eZ" type="number" min="0" value="42"></div>
+      </div>
+      <div class="scroll" style="margin-top:10px"><table><tbody id="eRows"></tbody></table></div>
+      <div id="eVerdict"></div>
+    </div>
+    <div class="lab">
+      <h4>Lab: the same maths on secp256k1</h4>
+      <label for="rMsg">Message</label><input id="rMsg" type="text" value="Batch approved by Demo University">
+      <div class="row"><button id="rSign">Sign with a new throwaway key</button></div>
+      <div class="scroll"><table><tbody id="rRows"></tbody></table></div>
+    </div>
+    <h3>The secret k</h3>
+    <p>k must be unique and unpredictable. Two signatures with the same k reveal the private key:</p>
+    <pre class="formula">k = (z1 - z2) / (s1 - s2)  mod n
+d = (s·k - z) / r  mod n</pre>
+    <p>Wallets typically derive k deterministically from the key and message (RFC 6979), so it isn't exposed to a faulty random generator. In this project, MetaMask does the signing, and our code never touches k.</p>
+  </section>
+
+  <section class="card" id="recover">
+    <h2>Recovery and malleability</h2>
+    <h3>Recovering the signer</h3>
+    <p>Ethereum doesn't send the public key. It rearranges the signing equation. Since <code>s·R = z·G + r·Q</code>:</p>
+    <pre class="formula">Q = (s × R - z × G) / r
+
+address = last 20 bytes of keccak256(Q.x || Q.y)</pre>
+    <p>The x coordinate of R is r, but two y values are possible. <code>v</code> (27 or 28) says which one. Recovery usually returns an address even when the message is wrong, so the code must always compare the result with the expected signer. The contract does so with <code>issuers[signer].active</code>.</p>
+    <h3>Malleability</h3>
+    <p>Negating k flips R to −R, which has the same x. So:</p>
+    <pre class="formula">(r, s, v)  and  (r, n - s, flipped v)  are both valid for the same message and key</pre>
+    <p>Anyone can compute the twin without the private key. OpenZeppelin's <code>ECDSA.recover</code> rejects any s above <code>n / 2</code>, which leaves each signature with just one accepted form.</p>
+    <p class="small muted">In the code: <code>CertificateRegistry.sol:73</code>, and OpenZeppelin's <code>ECDSA.sol:134</code>.</p>
+  </section>
+
+  <section class="card" id="eip712">
+    <h2>EIP-712</h2>
+    <div class="meta"><span class="tag">Used for: batch approval</span><span class="tag">Signing method: eth_signTypedData_v4</span></div>
+    <p>EIP-712 defines how to hash structured data so that wallets can display it and the signature only works in one place.</p>
+    <pre class="formula">typeHash(Batch)  = keccak256("Batch(bytes32 root,uint32 count)")
+structHash       = keccak256(typeHash || root || count)
+
+domainSeparator  = keccak256(
+    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+    || keccak256("AcademicCertificates") || keccak256("1") || chainId || contract )
+
+digest           = keccak256(0x19 || 0x01 || domainSeparator || structHash)</pre>
+    <p>Each value is padded to 32 bytes, and strings are hashed. Different structures can't collide because the type hash is included. The leading <code>0x19</code> can't begin a valid transaction encoding, so a signed message can't pass as a transaction.</p>
+    <div class="lab">
+      <h4>Lab: build the digest</h4>
+      <div class="grid3">
+        <div><label for="eipCount">Count</label><input id="eipCount" type="number" value="4" min="1"></div>
+        <div><label for="eipChain">Chain ID</label><input id="eipChain" type="number" value="1337" min="1"></div>
+        <div><label for="eipRegistry">Contract address</label><input id="eipRegistry" type="text" value="0x5fbdb2315678afecb367f032d93f642f64180aa3"></div>
+      </div>
+      <div class="scroll" style="margin-top:10px"><table><tbody id="eipRows"></tbody></table></div>
+      <p class="small muted">Change any value. The digest changes completely, so the signature would recover a different address.</p>
+    </div>
+    <p class="small muted">In the code: <code>CertificateRegistry.sol:70</code> and <code>certcrypto.mjs:98</code>.</p>
+  </section>
+
+  <section class="card" id="personal">
+    <h2>personal_sign</h2>
+    <div class="meta"><span class="tag">Used for: wallet linking</span><span class="tag">Standard: EIP-191</span></div>
+    <pre class="formula">digest = keccak256("\x19Ethereum Signed Message:\n" || byte length as text || message)</pre>
+    <p>The prefix separates messages from transactions. The message is then signed with ordinary ECDSA. A one-time code in the message stops a signature being reused, and the server clears the code after it succeeds.</p>
+    <div class="lab">
+      <h4>Lab: see the bytes that get hashed</h4>
+      <label for="psIn">Message</label><input id="psIn" type="text" value="Link this wallet. Code: abc123">
+      <div class="box" style="margin-top:10px"><h4>Bytes hashed</h4><div class="mono" id="psBytes"></div></div>
+      <div class="box tint" style="margin-top:8px"><h4>Digest</h4><div class="mono" id="psDigest"></div></div>
+    </div>
+    <p class="small muted">In the code: <code>chain.js:37</code> and <code>app.js:196</code>.</p>
+  </section>
+
+  <div class="group-head" id="g-merkle"><h2>Commitments and Merkle proofs</h2><p>Owner: Lokesh. Publishing one hash that covers everything, and revealing only parts of it.</p></div>
+
+  <section class="card" id="keccak">
+    <h2>Keccak-256</h2>
+    <div class="meta"><span class="tag">Output: 256 bits</span><span class="tag">State: 1,600 bits</span><span class="tag">Rate: 1,088 bits</span><span class="tag">Capacity: 512 bits</span></div>
+    <p>Keccak uses a <strong>sponge construction</strong>, which differs from SHA-256's Merkle–Damgård design. A large state absorbs input, is scrambled, and then gets squeezed for output.</p>
+    <div class="flow"><div><b>Pad</b>Add 0x01 … 0x80 to fill 136-byte blocks</div><span>→</span><div><b>Absorb</b>XOR a block into the rate, then run Keccak-f</div><span>→</span><div><b>Repeat</b>For each block</div><span>→</span><div><b>Squeeze</b>Take the first 32 bytes</div></div>
+    <p>The <strong>capacity</strong> part of the state is never directly touched by input or output, and it sets the security level. Because of this hidden state, Keccak isn't vulnerable to length extension.</p>
+    <p><strong>Keccak-256 vs SHA3-256:</strong> Ethereum adopted Keccak before NIST finalized SHA-3. SHA3-256 pads with <code>0x06</code> where Keccak pads with <code>0x01</code>, so the two give different outputs for the same input.</p>
+    <h3>Keccak-f[1600]: 24 rounds of 5 steps</h3>
+    <p>The state is a 5 × 5 grid of 64-bit lanes, <code>A[x, y]</code>.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Step</th><th>Formula</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><strong>θ theta</strong></td><td class="mono-cell">C[x] = XOR of column x<br>A[x,y] ^= C[x-1] ^ ROTL(C[x+1], 1)</td><td>Each bit depends on 11 bits, spreading across columns</td></tr>
+        <tr><td><strong>ρ rho</strong></td><td class="mono-cell">A[x,y] = ROTL(A[x,y], r[x,y])</td><td>Spreads bits within each lane</td></tr>
+        <tr><td><strong>π pi</strong></td><td class="mono-cell">B[y, 2x+3y] = A[x,y]</td><td>Moves lanes around the grid</td></tr>
+        <tr><td><strong>χ chi</strong></td><td class="mono-cell">A[x,y] ^= (NOT A[x+1,y]) AND A[x+2,y]</td><td>The only non-linear step</td></tr>
+        <tr><td><strong>ι iota</strong></td><td class="mono-cell">A[0,0] ^= RC[round]</td><td>Breaks symmetry between rounds</td></tr>
+      </tbody>
+    </table></div>
+    <div class="lab">
+      <h4>Lab: step through Keccak-f</h4>
+      <label for="kIn">Message (the first block is shown)</label><input id="kIn" type="text" value="cgpa 8.72">
+      <label for="kStep" style="margin-top:10px"><span id="kStepVal"></span></label>
+      <input id="kStep" type="range" min="0" value="0">
+      <div class="scroll" style="margin-top:8px"><div class="lanes" id="kLanes" aria-label="The 25 lanes of the state"></div></div>
+      <p class="small muted">Blue lanes changed in this step. Watch how fast the mostly-empty state fills up.</p>
+      <div class="box tint"><h4>Output: the first 32 bytes after round 24</h4><div class="mono" id="kOut"></div></div>
+    </div>
+    <h3>Security and cost</h3>
+    <p>Preimage resistance is about 2<sup>256</sup> and collision resistance is about 2<sup>128</sup>. On the EVM, it costs 30 gas plus 6 per 32-byte word, which is why on-chain hashing here uses Keccak-256, not SHA-256 (60 gas plus 12 per word).</p>
+  </section>
+
+  <section class="card" id="commit">
+    <h2>Salted commitments</h2>
+    <div class="meta"><span class="tag">Hiding</span><span class="tag">Binding</span><span class="tag">Salt: 32 bytes per field</span></div>
+    <pre class="formula">leaf = keccak256(0x00 || abi.encode(string name, string value, bytes32 salt))</pre>
+    <ul>
+      <li><strong>Binding</strong> rests on collision resistance. Opening to a different value would need a collision, costing about 2<sup>128</sup> work.</li>
+      <li><strong>Hiding</strong> rests on the salt. Without one, the hash of a low-entropy value such as a CGPA falls to about 1,000 guesses. With a 32-byte salt, the attacker must also search 2<sup>256</sup> salts.</li>
+      <li><strong>Why ABI encoding:</strong> each value gets its length and fixed slots. Packed encoding would make <code>("ab", "c")</code> and <code>("a", "bc")</code> identical.</li>
+    </ul>
+    <div class="lab">
+      <h4>Lab: see the encoded bytes</h4>
+      <div class="grid2"><div><label for="abiName">Field name</label><input id="abiName" type="text" value="cgpa"></div><div><label for="abiValue">Value</label><input id="abiValue" type="text" value="8.72"></div></div>
+      <div class="scroll" style="margin-top:10px"><table><thead><tr><th>Bytes</th><th>32-byte word</th><th>Meaning</th></tr></thead><tbody id="abiRows"></tbody></table></div>
+      <div class="box tint" style="margin-top:10px"><h4>Leaf = keccak256(0x00 || these words)</h4><div class="mono" id="abiLeaf"></div></div>
+    </div>
+    <p class="small muted">In the code: <code>certcrypto.mjs:36</code> and <code>certcrypto.mjs:77</code>.</p>
+  </section>
+
+  <section class="card" id="merkle">
+    <h2>Merkle trees</h2>
+    <div class="meta"><span class="tag">Proof size: O(log n)</span><span class="tag">Two levels: fields and batch</span></div>
+    <pre class="formula">node       = keccak256(0x01 || low || high)     children sorted by value
+batch leaf = keccak256(0x02 || certRoot)
+odd node   = moved up unchanged</pre>
+    <h3>Building and proving</h3>
+    <pre class="formula">Build:  while more than one node is left, hash neighbours in pairs
+Prove:  at each level, record the sibling of the current position (if any)
+Verify: h = leaf;  for each sibling: h = hashNode(h, sibling);  require h = root</pre>
+    <p>Forging a proof needs a second preimage or collision in Keccak-256, as the root fixes the whole tree. Sorted children mean a proof needs no left or right flags. This doesn't lose anything here, since each leaf names its own field.</p>
+    <h3>Three defences in the design</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Rule</th><th>Attack it blocks</th></tr></thead>
+      <tbody>
+        <tr><td>Prefixes 0x00, 0x01 and 0x02</td><td>Second preimage: an inner node's 64 input bytes being presented as a leaf</td></tr>
+        <tr><td>Odd node promoted, not duplicated</td><td>Two different lists sharing one root (CVE-2012-2459)</td></tr>
+        <tr><td>Field name inside the leaf</td><td>A value being presented under another field's name</td></tr>
+      </tbody>
+    </table></div>
+    <div class="lab">
+      <h4>Lab: verify a real proof</h4>
+      <label for="mField">Field to prove, from the certificate's 9 fields</label><select id="mField"></select>
+      <div class="scroll" style="margin-top:10px"><table><thead><tr><th>Step</th><th>Current hash</th><th>Sibling from proof</th><th>Sorted?</th><th>Result</th></tr></thead><tbody id="mRows"></tbody></table></div>
+      <div id="mVerdict"></div>
+      <h3>Proof size in batches</h3>
+      <div class="scroll"><table><thead><tr><th>Certificates</th><th>Hashes in a proof (at most)</th><th>Proof bytes</th></tr></thead><tbody id="mSizes"></tbody></table></div>
+    </div>
+    <p class="small muted">In the code: <code>certcrypto.mjs:41</code> to <code>certcrypto.mjs:70</code>, and <code>CertificateRegistry.sol:122</code>.</p>
+  </section>
+
+  <section class="card" id="disclosure">
+    <h2>Selective disclosure</h2>
+    <p>Selective disclosure is a protocol that combines the earlier algorithms. The student gives the verifier a presentation file containing the chosen fields, their salts and proofs, plus the certificate root, batch proof and signature.</p>
+    <h3>Verification order</h3>
+    <ol class="steps">
+      <li><span><strong>Format and chain:</strong> checks the file's shape, chain ID and registry address. A wrong chain or registry gives <code>NOT_ANCHORED</code>.</span></li>
+      <li><span><strong>Field proofs:</strong> for each field, leaf + proof must reach <code>certRoot</code>. Failure gives <code>TAMPERED</code>.</span></li>
+      <li><span><strong>Batch proof:</strong> <code>batchLeaf(certRoot)</code> + proof must reach <code>batchRoot</code>. Failure gives <code>TAMPERED</code>.</span></li>
+      <li><span><strong>On-chain record:</strong> the root must be published. If not: <code>NOT_ANCHORED</code>.</span></li>
+      <li><span><strong>Signature:</strong> recovering from the EIP-712 digest must give the batch's recorded issuer. If not: <code>UNKNOWN_ISSUER</code>.</span></li>
+      <li><span><strong>Registry:</strong> the issuer must have a name, and it must match a disclosed <code>organizationName</code>. If not: <code>UNKNOWN_ISSUER</code>.</span></li>
+      <li><span><strong>Revocation:</strong> the batch and certificate roots must not be revoked. If they are: <code>REVOKED</code>.</span></li>
+      <li><span><strong>PDF:</strong> if supplied, AES-GCM decryption and SHA-256 must match the signed hash. If not: <code>TAMPERED</code>.</span></li>
+      <li><span><strong>Result:</strong> if every check passes: <code>VALID</code>.</span></li>
+    </ol>
+    <h3>What it does and doesn't hide</h3>
+    <ul>
+      <li><strong>Hidden:</strong> the values of unrevealed fields.</li>
+      <li><strong>Not hidden:</strong> the number of fields, the batch size, and the certificate root. The same root in every presentation means verifiers who compare notes can link them.</li>
+      <li><strong>Not provable:</strong> statements such as "CGPA is at least 8" without revealing the value. That needs zero-knowledge proofs, which are future work.</li>
+    </ul>
+    <p class="small muted">In the code: <code>certcrypto.mjs:176</code> and <code>certcrypto.mjs:242</code>.</p>
+  </section>
+
+  <section class="card" id="summary">
+    <h2>Summary table</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Algorithm</th><th>Group</th><th>Type</th><th>Sizes</th><th>Security rests on</th><th>Library</th></tr></thead>
+      <tbody>
+        <tr><td>SHA-256</td><td>Hashing</td><td>Merkle–Damgård hash</td><td>256-bit output</td><td>Compression function</td><td>Web Crypto, <code>node:crypto</code></td></tr>
+        <tr><td>scrypt</td><td>Hashing</td><td>Memory-hard password hash</td><td>32 MiB, 16-byte salt, 64-byte output</td><td>Cost of memory per guess</td><td><code>node:crypto</code></td></tr>
+        <tr><td>AES-256</td><td>Encryption</td><td>Block cipher</td><td>128-bit block, 256-bit key</td><td>Substitution-permutation design</td><td>Web Crypto, <code>node:crypto</code></td></tr>
+        <tr><td>GCM</td><td>Encryption</td><td>AEAD mode</td><td>96-bit IV, 128-bit tag</td><td>AES, GHASH and a unique IV</td><td>Web Crypto, <code>node:crypto</code></td></tr>
+        <tr><td>ECDSA</td><td>Signatures</td><td>Elliptic curve signature</td><td>65-byte signature</td><td>Discrete logarithm and a secret k</td><td>OpenZeppelin, ethers, MetaMask</td></tr>
+        <tr><td>EIP-712</td><td>Signatures</td><td>Typed-data hashing</td><td>32-byte digest</td><td>Keccak-256 and domain binding</td><td>OpenZeppelin, ethers</td></tr>
+        <tr><td><code>personal_sign</code></td><td>Signatures</td><td>Prefixed message signing</td><td>32-byte digest</td><td>ECDSA and a one-time code</td><td>MetaMask, ethers</td></tr>
+        <tr><td>Keccak-256</td><td>Commitments</td><td>Sponge hash</td><td>256-bit output</td><td>Keccak-f permutation</td><td>ethers, EVM</td></tr>
+        <tr><td>Salted commitment</td><td>Commitments</td><td>Hash commitment</td><td>32-byte salt</td><td>Keccak-256 and secret salts</td><td>This project</td></tr>
+        <tr><td>Merkle tree</td><td>Commitments</td><td>Authenticated structure</td><td>O(log n) proofs</td><td>Keccak-256 and domain separation</td><td>This project</td></tr>
+        <tr><td>Selective disclosure</td><td>Commitments</td><td>Protocol</td><td>Up to 4 hashes per field</td><td>All of the above</td><td>This project</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">The code on this page is written for learning. It isn't constant-time, so it should never handle real keys. The project itself uses the audited libraries listed above.</p>
+  </section>
+  <footer>Part of the CertChain group docs. Each group's folder has its own guide and visual.</footer>
+</main>
+</div>
+<script src="algorithms.js"></script>
+</body>
+</html>

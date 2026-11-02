@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Merkle Proofs Visual</title>
+<link rel="stylesheet" href="visual.css">
+<style>
+  .tree-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: #fff; }
+  svg.tree { display: block; min-width: 820px; width: 100%; height: auto; }
+  svg.tree text { font-size: 11px; fill: var(--ink); }
+  svg.tree .hex { font-family: var(--mono); font-size: 10.5px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; margin: 8px 0; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; border: 1px solid transparent; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(235px, 1fr)); gap: 6px 14px; }
+  .fields label { display: flex; gap: 7px; align-items: baseline; font-weight: 400; margin: 0; }
+  .fields b { font-weight: 600; }
+  .fields .val { color: var(--muted); font-size: 13px; }
+  td input[type=text] { min-width: 150px; padding: 4px 7px; font-size: 13px; }
+  pre.json { margin: 0; max-height: 280px; overflow: auto; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .switch { display: inline-flex; border: 1px solid var(--accent); border-radius: 6px; overflow: hidden; }
+  .switch button { border: 0; border-radius: 0; }
+  .switch button[aria-pressed=true] { background: var(--accent); color: #fff; }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>Commitments and Merkle Proofs</h1>
+    <p>Salted commitments, Merkle trees and selective disclosure. Every hash here is real Keccak-256, built with the same rules as <code>certcrypto.mjs</code>.</p>
+  </header>
+  <nav class="jump">
+    <a href="#salt">1. Salted commitments</a><a href="#tree">2. Selective disclosure</a><a href="#batch">3. Batches</a><a href="#prefix">4. Second preimage</a><a href="#odd">5. Odd nodes</a>
+  </nav>
+
+  <section class="card" id="salt">
+    <h2>1. A commitment hides a value and locks it in</h2>
+    <p class="lead">A CGPA has only about 1,000 likely values. Without a salt, its hash can be cracked by trying each one. This attack runs live.</p>
+    <div class="grid2">
+      <div><label for="cgpa">The student's CGPA</label><input id="cgpa" type="text" value="8.72"></div>
+      <div class="row" style="align-items:flex-end"><button class="primary" id="saltGo">Attack both versions</button></div>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="box">
+        <h4>Without a salt: keccak256("cgpa", value)</h4>
+        <div class="mono" id="plainHash"></div>
+        <div id="plainVerdict"></div>
+      </div>
+      <div class="box">
+        <h4>With a 32-byte salt: keccak256(0x00, "cgpa", value, salt)</h4>
+        <div class="mono" id="saltHash"></div>
+        <div id="saltVerdict"></div>
+      </div>
+    </div>
+    <p class="note"><strong>Hiding:</strong> the hash reveals nothing without the salt. <strong>Binding:</strong> the student can't later reveal a different value, because it wouldn't produce the same hash.</p>
+  </section>
+
+  <section class="card" id="tree">
+    <h2>2. Selective disclosure with one certificate's tree</h2>
+    <p class="lead">Each of the 9 fields becomes a leaf. Choose what to reveal, and see what the verifier receives. All the data here is fictional.</p>
+    <div class="fields" id="fieldPicks"></div>
+    <div class="legend">
+      <span><i style="background:#cdeedd;border-color:#16794c"></i>Revealed field</span>
+      <span><i style="background:#dce7f7;border-color:#2a5599"></i>Hash given in a proof</span>
+      <span><i style="background:#fbe7c6;border-color:#8a5a00"></i>Recomputed by the verifier</span>
+      <span><i style="background:#f1f3f6;border-color:#d5dbe5"></i>Stays hidden</span>
+    </div>
+    <div class="tree-wrap"><svg class="tree" id="certTree" role="img" aria-label="Merkle tree of the certificate's nine fields"></svg></div>
+    <h3>Verifier's check (edit a value to tamper with it)</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Field</th><th>Value</th><th>Salt</th><th>Proof hashes</th><th>Recomputed root</th><th>Result</th></tr></thead>
+      <tbody id="checkRows"></tbody>
+    </table></div>
+    <div id="treeVerdict"></div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="box tint"><h4>Certificate root</h4><div class="mono" id="certRoot"></div></div>
+      <div class="box"><h4>What the verifier learns about hidden fields</h4><div class="small" id="hiddenNote"></div></div>
+    </div>
+    <h3>Presentation file sent to the verifier</h3>
+    <div class="box"><pre class="json" id="presentation" tabindex="0"></pre></div>
+  </section>
+
+  <section class="card" id="batch">
+    <h2>3. One root for a whole class</h2>
+    <p class="lead">Certificate roots become leaves of a second tree. Only the batch root goes on-chain, however many students there are.</p>
+    <div class="grid2">
+      <div><label for="batchN">Certificates in the batch: <span id="batchNVal"></span></label><input id="batchN" type="range" min="1" max="16" value="8"></div>
+      <div><label for="batchI">Student to prove: <span id="batchIVal"></span></label><input id="batchI" type="range" min="1" max="8" value="3"></div>
+    </div>
+    <div class="tree-wrap" style="margin-top:10px"><svg class="tree" id="batchTree" role="img" aria-label="Merkle tree of certificate roots in a batch"></svg></div>
+    <div class="small" id="batchNote" style="margin-top:8px"></div>
+    <h3>How cost and proof size grow</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Certificates</th><th>Original: gas (237,508 each)</th><th>Improved: gas for one batch</th><th>Saved</th><th>Hashes in a proof</th></tr></thead>
+      <tbody id="growth"></tbody>
+    </table></div>
+    <p class="note">The batch gas figure is the measured 57,074. The original's totals are calculated from its measured per-certificate cost. The two contracts don't store the same data, so this isn't a like-for-like comparison.</p>
+  </section>
+
+  <section class="card" id="prefix">
+    <h2>4. Why the hashes have different prefixes</h2>
+    <p class="lead">An inner node is the hash of 64 bytes. Without separate prefixes, an attacker can present those 64 bytes as if they were a certificate. It's called a second-preimage attack.</p>
+    <div class="row">
+      <span class="switch" role="group" aria-label="Hash rules">
+        <button id="noPrefix" aria-pressed="false">Without prefixes</button>
+        <button id="withPrefix" aria-pressed="true">Project's rules (0x00, 0x01, 0x02)</button>
+      </span>
+      <button class="primary" id="attackGo">Attack</button>
+    </div>
+    <div class="grid2">
+      <div class="box"><h4>Batch root on-chain</h4><div class="mono" id="pRoot"></div></div>
+      <div class="box"><h4>Fake "certificate": two child hashes joined together</h4><div class="mono" id="pFake"></div></div>
+    </div>
+    <div id="pVerdict"></div>
+    <p class="note">The project's contract applies 0x02 to certificate roots and 0x01 to inner nodes, so a node's hash can't equal a leaf's hash. The test at <code>certificateRegistry.js:154</code> checks this.</p>
+  </section>
+
+  <section class="card" id="odd">
+    <h2>5. Handling an odd number of nodes</h2>
+    <p class="lead">When a level has an odd count, one common method pairs the last node with itself. That lets two different lists share one root.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Rule</th><th>Root of [A, B, C]</th><th>Root of [A, B, C, C]</th><th>Same root?</th></tr></thead>
+      <tbody id="oddRows"></tbody>
+    </table></div>
+    <p class="note">Bitcoin's block tree has this weakness, recorded as CVE-2012-2459. This project promotes the odd node unchanged, so the two lists get different roots.</p>
+  </section>
+  <footer>Part of the CertChain group docs. See <a href="README.md">README.md</a> for the full explanation.</footer>
+</main>
+<script src="visual.js"></script>
+</body>
+</html>

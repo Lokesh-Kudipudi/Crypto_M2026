@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashing Visual</title>
+<link rel="stylesheet" href="visual.css">
+<style>
+  .bits { display: grid; grid-template-columns: repeat(32, 1fr); gap: 2px; margin: 8px 0; max-width: 640px; }
+  .bits i { aspect-ratio: 1; background: var(--tint); border-radius: 1px; display: block; }
+  .bits i.diff { background: var(--accent); }
+  .memory { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; max-width: 420px; margin: 8px 0; }
+  .memory i { aspect-ratio: 1; background: var(--tint); border-radius: 2px; display: block; }
+  .memory i.w { background: #9db6dc; }
+  .memory i.r { background: var(--accent); }
+  .dbrow { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>Hashing</h1>
+    <p>SHA-256 for PDFs, SHA-256 for tokens, and scrypt for passwords. Every hash on this page is computed live in your browser.</p>
+  </header>
+  <nav class="jump">
+    <a href="#avalanche">1. Fingerprints</a><a href="#pdf">2. PDF check</a><a href="#tokens">3. Token storage</a><a href="#fast">4. Fast hash attack</a><a href="#scrypt">5. scrypt</a>
+  </nav>
+
+  <section class="card" id="avalanche">
+    <h2>1. A hash is a fingerprint</h2>
+    <p class="lead">Change one character, and about half of the 256 output bits flip. That's the avalanche effect.</p>
+    <div class="grid2">
+      <div><label for="a1">Text A</label><input id="a1" type="text" value="CGPA 8.72"></div>
+      <div><label for="a2">Text B</label><input id="a2" type="text" value="CGPA 9.72"></div>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="box tint"><h4>SHA-256 of A</h4><div class="mono" id="h1"></div></div>
+      <div class="box tint"><h4>SHA-256 of B</h4><div class="mono" id="h2"></div></div>
+    </div>
+    <h3>Bits that differ <span class="tag" id="diffCount"></span></h3>
+    <div class="bits" id="bits" role="img" aria-label="Grid of 256 bits showing where the two hashes differ"></div>
+    <p class="note">The output is always 256 bits, so a whole PDF and a two-word message give fingerprints of the same size. You can't work backwards from one to the input.</p>
+  </section>
+
+  <section class="card" id="pdf">
+    <h2>2. Checking a certificate PDF</h2>
+    <p class="lead">The university puts the PDF's hash inside the signed certificate. A verifier hashes the file they received and compares the two.</p>
+    <div class="row">
+      <button class="primary" id="pdfSign">University: record the hash</button>
+      <button id="pdfTamper">Attacker: change one byte</button>
+      <button id="pdfReset">Restore the original</button>
+    </div>
+    <label for="pdfFile" style="margin-top:12px">Or use your own file (it stays in this browser)</label>
+    <input id="pdfFile" type="file">
+    <div class="grid2" style="margin-top:12px">
+      <div class="box"><h4>Signed <code>pdfSha256</code> field</h4><div class="mono" id="pdfSigned">Not recorded yet</div></div>
+      <div class="box"><h4>Hash of the file the verifier has</h4><div class="mono" id="pdfNow"></div></div>
+    </div>
+    <div class="small muted" id="pdfInfo" style="margin-top:8px"></div>
+    <div id="pdfVerdict"></div>
+  </section>
+
+  <section class="card" id="tokens">
+    <h2>3. Why tokens are stored only as hashes</h2>
+    <p class="lead">Session tokens, claim codes and share links act like keys. If the database stored them as they are, a stolen copy would let an attacker use every one.</p>
+    <div class="row"><button class="primary" id="tokNew">Log in (create a session)</button></div>
+    <div class="grid2">
+      <div class="box"><h4>Browser cookie (the real token)</h4><div class="mono" id="tokReal">Log in first</div></div>
+      <div class="box tint"><h4>Database row: <code>sessions.token_hash</code></h4><div class="dbrow" id="tokDb">Empty</div></div>
+    </div>
+    <h3>Attack with a stolen database</h3>
+    <div class="row">
+      <button id="tokStolen" disabled>Send the stolen hash as the cookie</button>
+      <button id="tokGood" disabled>Send the real token</button>
+    </div>
+    <div id="tokVerdict"></div>
+    <p class="note">A plain, fast hash is safe here because tokens are random: 256 bits for tokens and about 98 bits for claim codes. There's nothing to guess. Passwords are different, as the next section shows.</p>
+  </section>
+
+  <section class="card" id="fast">
+    <h2>4. Why fast hashes fail for passwords</h2>
+    <p class="lead">People choose guessable passwords. This attack tries a word list against a stolen unsalted SHA-256 hash, using your real browser speed.</p>
+    <div class="grid2">
+      <div><label for="fastPw">A user's password</label><input id="fastPw" type="text" value="dragon2024"></div>
+      <div class="box tint"><h4>Stolen database value</h4><div class="mono" id="fastHash"></div></div>
+    </div>
+    <div class="row"><button class="primary" id="fastGo">Run the attack</button></div>
+    <div id="fastVerdict"></div>
+    <h3>Two users, same password</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>User</th><th>Unsalted SHA-256</th><th>With a random salt</th></tr></thead>
+      <tbody id="saltRows"></tbody>
+    </table></div>
+    <p class="note">Without salts, equal passwords give equal hashes, and one lookup table works on every account. A random salt forces the attacker to attack each account separately.</p>
+  </section>
+
+  <section class="card" id="scrypt">
+    <h2>5. scrypt makes each guess expensive</h2>
+    <p class="lead">This runs real scrypt with the project's settings: N = 2<sup>15</sup>, r = 8, p = 1, and a 16-byte salt. It gives a 64-byte output.</p>
+    <div class="grid2">
+      <div>
+        <label for="scPw">Password</label><input id="scPw" type="text" value="correct horse">
+        <div class="row"><button class="primary" id="scGo">Hash with scrypt</button></div>
+        <div class="box tint"><h4>Stored value, as in <code>users.password_hash</code></h4><div class="mono" id="scOut">Not computed yet</div></div>
+        <div id="scStat" class="small" style="margin-top:8px"></div>
+      </div>
+      <div>
+        <h3 style="margin-top:0">How the memory is used</h3>
+        <p class="small muted">Illustration with 64 blocks. The real run uses 32,768 blocks of 1 KiB each, or 32 MiB.</p>
+        <div class="memory" id="memory" role="img" aria-label="Memory grid being filled and then read at unpredictable positions"></div>
+        <div class="small" id="memPhase">Press the button to start.</div>
+      </div>
+    </div>
+    <h3>What an attacker's budget buys</h3>
+    <p class="small muted">Uses the speeds measured on this device for one CPU thread. Specialized hardware can be far faster at SHA-256, and scrypt's memory use is designed to limit that advantage.</p>
+    <div class="row">
+      <label for="space" style="margin:0">Guesses to try</label>
+      <select id="space" style="width:auto;max-width:100%">
+        <option value="10000">10,000 common passwords</option>
+        <option value="10000000">10 million leaked passwords</option>
+        <option value="208827064576" selected>All 8-letter lowercase passwords (26^8)</option>
+      </select>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>Algorithm</th><th>Time for one guess</th><th>Time for all guesses</th></tr></thead>
+      <tbody id="budget"></tbody>
+    </table></div>
+    <p class="note">The project adds two more defences: 10 login attempts per email every 15 minutes, and a dummy hash for unknown emails, so response time doesn't reveal which accounts exist.</p>
+  </section>
+  <footer>Part of the CertChain group docs. See <a href="README.md">README.md</a> for the full explanation.</footer>
+</main>
+<script src="visual.js"></script>
+</body>
+</html>
